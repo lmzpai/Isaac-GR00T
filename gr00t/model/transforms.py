@@ -26,6 +26,7 @@ from pydantic import Field, PrivateAttr
 from transformers import AutoProcessor, ProcessorMixin
 from transformers.data.data_collator import DataCollatorMixin
 from transformers.feature_extraction_utils import BatchFeature
+import torchvision.transforms as T
 
 from gr00t.data.embodiment_tags import EMBODIMENT_TAG_MAPPING, EmbodimentTag
 from gr00t.data.schema import DatasetMetadata
@@ -91,7 +92,9 @@ class DefaultDataCollator(DataCollatorMixin):
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         return collate(features, self.eagle_processor)
 
-
+to_tensor = T.Compose([
+    T.ToTensor(),  # [0,1]
+])
 class GR00TTransform(InvertibleModalityTransform):
 
     # -- We inherit from ModalityTransform, so we keep apply_to as well --
@@ -176,6 +179,7 @@ class GR00TTransform(InvertibleModalityTransform):
                 video: [V, T, C, H, W]
         Returns: required input with the format `BatchFeature`
         """
+        print(batch.keys())
         # TODO(YL, FH): check if this is correct
         images = batch["images"]  # [V, T, C, H, W]
         images.shape[0]
@@ -190,6 +194,7 @@ class GR00TTransform(InvertibleModalityTransform):
         text_content.append({"type": "text", "text": lang})
 
         eagle_images = [Image.fromarray(np.transpose(v, (1, 2, 0))) for v in np_images]
+        
         eagle_image = [{"type": "image", "image": img} for img in eagle_images]
         eagle_conversation = [
             {
@@ -211,6 +216,15 @@ class GR00TTransform(InvertibleModalityTransform):
         }
         inputs = {}
         inputs["eagle_content"] = eagle_content
+        
+        inputs['dino_image'] = torch.cat([
+            to_tensor(img) for img in eagle_images
+        ], dim = 0)
+
+        inputs['depth'] = torch.rand(inputs['dino_image'].shape[:-1])
+        inputs['depth_conf'] = torch.rand(inputs['dino_image'].shape[:-1])
+        inputs['camera'] = torch.rand((len(eagle_images),7))
+
         return inputs
 
     def _prepare_video(self, data: dict):

@@ -23,12 +23,14 @@ from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 from transformers.feature_extraction_utils import BatchFeature
+import torch.nn as nn
 
 from .action_head.flow_matching_action_head import (
     FlowmatchingActionHead,
     FlowmatchingActionHeadConfig,
 )
 from .backbone import EagleBackbone
+from .spatial import VGGTSpatialEncoding
 
 BACKBONE_FEATURE_KEY = "backbone_features"
 ACTION_KEY = "action_pred"
@@ -85,6 +87,13 @@ class GR00T_N1_5(PreTrainedModel):
         self.action_horizon = config.action_horizon
         self.action_dim = config.action_dim
         self.compute_dtype = config.compute_dtype
+        self.spatial_embed = VGGTSpatialEncoding(
+            dino_model_name="vit_base_patch16_224.dino",
+            encoder_depth=6,
+            num_heads=12,
+            pretrained=True,
+            input_dim=2048
+        )
 
     def validate_inputs(self, inputs):
         # NOTE -- this should be handled internally by the model
@@ -164,6 +173,16 @@ class GR00T_N1_5(PreTrainedModel):
     ) -> BatchFeature:
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         backbone_outputs = self.backbone(backbone_inputs)
+        spatial_tokens = self.spatial_embed(backbone_inputs['dino_image'], 
+                                            backbone_inputs['depth'],
+                                            backbone_inputs['depth_conf'],
+                                            backbone_inputs['camera'],)[0]
+        backbone_outputs['backbone_features'] = torch.cat([
+            backbone_outputs['backbone_features'], spatial_tokens
+        ],axis=-2)
+        backbone_outputs['backbone_attention_mask'] = torch.cat([
+            backbone_outputs['backbone_attention_mask'][...,:1,:],backbone_outputs['backbone_attention_mask']
+        ],axis=-2)
         action_head_outputs = self.action_head(backbone_outputs, action_inputs)
         self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
         return action_head_outputs
@@ -175,6 +194,18 @@ class GR00T_N1_5(PreTrainedModel):
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         # Because the behavior of backbones remains the same for training and inference, we can use `forward` for backbones.
         backbone_outputs = self.backbone(backbone_inputs)
+
+        spatial_tokens = self.spatial_embed(backbone_inputs['dino_image'], 
+                                            backbone_inputs['depth'],
+                                            backbone_inputs['depth_conf'],
+                                            backbone_inputs['camera'],)[0]
+        backbone_outputs['backbone_features'] = torch.cat([
+            backbone_outputs['backbone_features'], spatial_tokens
+        ],axis=-2)
+        backbone_outputs['backbone_attention_mask'] = torch.cat([
+            backbone_outputs['backbone_attention_mask'][...,:1,:],backbone_outputs['backbone_attention_mask']
+        ],axis=-2)
+        
         action_head_outputs = self.action_head.get_action(backbone_outputs, action_inputs)
         self.validate_data(action_head_outputs, backbone_outputs, is_training=False)
         return action_head_outputs
